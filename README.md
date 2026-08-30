@@ -11,13 +11,13 @@ Notifications are captured by eavesdropping on the session bus with `dbus-monito
 
 Use `pip`, or `uv` to install the required packages:
 
-```sh
+```bash
 pip install -r requirements.txt
 ```
 
 or
 
-```sh
+```bash
 uv venv
 uv install -r requirements.txt
 ```
