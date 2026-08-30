@@ -1,0 +1,11 @@
+[Unit]
+Description=Log desktop notifications to SQLite
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/Projects/python/notify-tracker/tracker.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
