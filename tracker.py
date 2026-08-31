@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """Watches D-Bus for all desktop notifications and logs them to SQLite.
 
-Notifications arrive as org.freedesktop.Notifications.Notify calls, which
-swaync (or any notification daemon) receives and displays. This eavesdrops
-on the session bus for those calls instead of going through swaync, since
-swaync-client only exposes counts, not notification content.
+A system to log desktop notifications (D-Bus `org.freedesktop.Notifications.Notify` call)
+to a local SQLite database, and provides a few scripts to browse and analyse the history.
+
+Notifications are captured by eavesdropping on the session bus with `dbus-monitor`,
+so it works regardless of which notification daemon (eg: swaync or dunst)
+is actually displaying them.
 """
+
 import re
 import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import IO, cast
 
 DB_PATH = Path.home() / ".local" / "share" / "notify-tracker" / "notifications.db"
 
@@ -27,23 +31,26 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 """
 
-# Top-level Notify() args are indented exactly 3 spaces by dbus-monitor;
-# nested array/dict entries (actions, hints) are indented further, so this
-# only picks up app_name, app_icon, summary, body in order.
+INSERT_NOTIFICATION = "INSERT INTO notifications (app_name, sender, message, raw_summary, raw_body, received_at) VALUES (?, ?, ?, ?, ?, ?)"
+
+COUNTS_BY_APP_FILTER = "SELECT app_name, sender, COUNT(*) AS n FROM notifications WHERE app_name LIKE ? GROUP BY app_name, sender ORDER BY n DESC"
+
+COUNTS_ALL = "SELECT app_name, sender, COUNT(*) AS n FROM notifications GROUP BY app_name, sender ORDER BY n DESC"
+
+# This only picks up app_name, app_icon, summary and the body
 TOP_LEVEL_STRING = re.compile(r'^   string "(.*)"$')
 
 # Discord's server-channel notifications format the body as
 # "Username: message text". DM notifications just have the raw message as
-# the body, with the sender in the summary instead. This heuristic is
-# Discord-specific and may need adjusting if it changes its notification
-# format; other apps just get summary/body stored as-is.
-SENDER_PREFIX = re.compile(r'^([^\s:][^:]{0,60}): (.*)$', re.S)
+# the body, with the sender in the summary instead.
+# Hopefully Discord doesn't change it's notification format in the future...
+SENDER_PREFIX = re.compile(r"^([^\s:][^:]{0,60}): (.*)$", re.DOTALL)
 
 
 def init_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(SCHEMA)
+    _ = conn.execute(SCHEMA)
     conn.commit()
     return conn
 
@@ -61,7 +68,8 @@ def watch() -> None:
     print(f"Logging all notifications to {DB_PATH}", flush=True)
 
     cmd = [
-        "dbus-monitor", "--session",
+        "dbus-monitor",
+        "--session",
         "interface='org.freedesktop.Notifications',member='Notify'",
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, bufsize=1)
@@ -70,7 +78,8 @@ def watch() -> None:
     top_strings: list[str] = []
 
     assert proc.stdout is not None
-    for line in proc.stdout:
+    stdout = cast(IO[str], proc.stdout)
+    for line in stdout:
         line = line.rstrip("\n")
 
         if line.startswith("method call") and "member=Notify" in line:
@@ -96,29 +105,25 @@ def watch() -> None:
             top_strings = []
 
             sender, message = split_sender(app_name, summary, body)
-            now = datetime.now(timezone.utc).isoformat()
-            conn.execute(
-                "INSERT INTO notifications (app_name, sender, message, raw_summary, raw_body, received_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (app_name, sender, message, summary, body, now),
+            received_at = datetime.now(timezone.utc)
+            _ = conn.execute(
+                INSERT_NOTIFICATION,
+                (app_name, sender, message, summary, body, received_at.isoformat()),
             )
             conn.commit()
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] ({app_name}) {sender}: {message}", flush=True)
+            print(
+                f"[{received_at.astimezone().strftime('%H:%M:%S')}] ({app_name}) {sender}: {message}",
+                flush=True,
+            )
 
 
 def show_counts(app_filter: str | None = None) -> None:
     conn = init_db()
     if app_filter:
-        rows = conn.execute(
-            "SELECT app_name, sender, COUNT(*) AS n FROM notifications "
-            "WHERE app_name LIKE ? GROUP BY app_name, sender ORDER BY n DESC",
-            (f"%{app_filter}%",),
-        ).fetchall()
+        raw_rows = conn.execute(COUNTS_BY_APP_FILTER, (f"%{app_filter}%",)).fetchall()
     else:
-        rows = conn.execute(
-            "SELECT app_name, sender, COUNT(*) AS n FROM notifications "
-            "GROUP BY app_name, sender ORDER BY n DESC"
-        ).fetchall()
+        raw_rows = conn.execute(COUNTS_ALL).fetchall()
+    rows = cast(list[tuple[str, str, int]], raw_rows)
     if not rows:
         print("No notifications logged yet.")
         return

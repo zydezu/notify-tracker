@@ -4,36 +4,49 @@
 Reads the same SQLite DB that tracker.py writes to, and auto-refreshes
 so notifications logged while the TUI is open show up live.
 """
+
 import curses
+import sqlite3
 import sys
 from datetime import datetime
+from typing import cast
 
 from tracker import init_db
 
 REFRESH_MS = 2000
 FETCH_LIMIT = 2000
 
+NOTIFICATIONS_BY_APP_FILTER = "SELECT app_name, sender, message, received_at FROM notifications WHERE app_name LIKE ? OR sender LIKE ? ORDER BY id DESC LIMIT ?"
 
-def fetch_rows(conn, app_filter):
+NOTIFICATIONS_ALL = "SELECT app_name, sender, message, received_at FROM notifications ORDER BY id DESC LIMIT ?"
+
+Row = tuple[str, str, str, str]
+
+
+def fetch_rows(conn: sqlite3.Connection, app_filter: str | None) -> list[Row]:
     if app_filter:
         like = f"%{app_filter}%"
-        return conn.execute(
-            "SELECT app_name, sender, message, received_at FROM notifications "
-            "WHERE app_name LIKE ? OR sender LIKE ? ORDER BY id DESC LIMIT ?",
-            (like, like, FETCH_LIMIT),
+        rows = conn.execute(
+            NOTIFICATIONS_BY_APP_FILTER, (like, like, FETCH_LIMIT)
         ).fetchall()
-    return conn.execute(
-        "SELECT app_name, sender, message, received_at FROM notifications "
-        "ORDER BY id DESC LIMIT ?",
-        (FETCH_LIMIT,),
-    ).fetchall()
+    else:
+        rows = conn.execute(NOTIFICATIONS_ALL, (FETCH_LIMIT,)).fetchall()
+    return cast(list[Row], rows)
 
 
 def local_time(iso_ts: str) -> str:
     return datetime.fromisoformat(iso_ts).astimezone().strftime("%H:%M:%S")
 
 
-def draw_row(stdscr, y, width, app, sender, message, ts):
+def draw_row(
+    stdscr: curses.window,
+    y: int,
+    width: int,
+    app: str,
+    sender: str,
+    message: str,
+    ts: str,
+) -> None:
     stdscr.addnstr(y, 0, f"{local_time(ts)}  ", width)
     col = 11
 
@@ -48,8 +61,8 @@ def draw_row(stdscr, y, width, app, sender, message, ts):
     stdscr.addnstr(y, col, message.replace("\n", " "), max(0, width - col))
 
 
-def main(stdscr, initial_filter=None):
-    curses.curs_set(0)
+def main(stdscr: curses.window, initial_filter: str | None = None) -> None:
+    _ = curses.curs_set(0)
     try:
         curses.start_color()
         curses.use_default_colors()
@@ -92,7 +105,9 @@ def main(stdscr, initial_filter=None):
             footer = "/:filter  c:clear filter  j/k:scroll  g/G:top/bottom  q:quit"
         try:
             # Writing the very last cell of the screen raises in some terminals; harmless.
-            stdscr.addnstr(height - 1, 0, footer.ljust(width), width - 1, curses.A_REVERSE)
+            stdscr.addnstr(
+                height - 1, 0, footer.ljust(width), width - 1, curses.A_REVERSE
+            )
         except curses.error:
             pass
 
@@ -115,24 +130,24 @@ def main(stdscr, initial_filter=None):
 
         if ch == -1:
             continue
-        elif ch in (ord('q'), 27):
+        elif ch in (ord("q"), 27):
             break
-        elif ch in (ord('j'), curses.KEY_DOWN):
+        elif ch in (ord("j"), curses.KEY_DOWN):
             offset = min(offset + 1, max_offset)
-        elif ch in (ord('k'), curses.KEY_UP):
+        elif ch in (ord("k"), curses.KEY_UP):
             offset = max(offset - 1, 0)
         elif ch == curses.KEY_NPAGE:
             offset = min(offset + list_height, max_offset)
         elif ch == curses.KEY_PPAGE:
             offset = max(offset - list_height, 0)
-        elif ch in (ord('g'), curses.KEY_HOME):
+        elif ch in (ord("g"), curses.KEY_HOME):
             offset = 0
-        elif ch in (ord('G'), curses.KEY_END):
+        elif ch in (ord("G"), curses.KEY_END):
             offset = max_offset
-        elif ch == ord('/'):
+        elif ch == ord("/"):
             filtering = True
             filter_buf = app_filter or ""
-        elif ch == ord('c'):
+        elif ch == ord("c"):
             app_filter = None
             offset = 0
 

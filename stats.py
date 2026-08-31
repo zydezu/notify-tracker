@@ -3,11 +3,13 @@
 
 Reads the same SQLite DB that tracker.py writes to and prints three
 breakdowns of how many notifications came in: per day, per app, and per
-sender (i.e. the person/channel, not just the app).
+sender (eg: the person/channel, not just the application).
 """
+
 import re
 import sys
 from datetime import datetime
+from typing import cast
 
 from rich.console import Console
 from rich.table import Table
@@ -20,9 +22,13 @@ BAR_WIDTH = 20
 
 console = Console()
 
-# Discord reply notifications name the sender "X replying to Y", which would
+# Discord reply notifications name the sender, which would
 # otherwise fragment a single person into two separate senders.
 REPLYING_TO_RE = re.compile(r"^(.*?) replying to .+$", re.IGNORECASE)
+
+NOTIFICATIONS_BY_APP_FILTER = "SELECT app_name, sender, received_at FROM notifications WHERE app_name LIKE ? OR sender LIKE ?"
+
+NOTIFICATIONS_ALL = "SELECT app_name, sender, received_at FROM notifications"
 
 
 def local_date(iso_ts: str) -> str:
@@ -39,7 +45,9 @@ def bar(n: int, max_n: int) -> str:
     return "█" * filled + "░" * (BAR_WIDTH - filled)
 
 
-def print_count_table(title: str, rows: list[tuple[str, int]], label_header: str) -> None:
+def print_count_table(
+    title: str, rows: list[tuple[str, int]], label_header: str
+) -> None:
     table = Table(title=title, title_style="bold", header_style="bold")
     table.add_column(label_header, style="cyan", no_wrap=True)
     table.add_column("count", justify="right")
@@ -56,7 +64,9 @@ def print_count_table(title: str, rows: list[tuple[str, int]], label_header: str
     console.print(table)
 
 
-def print_daily_top_table(title: str, by_day_group: dict[str, dict[str, int]], top_n: int) -> None:
+def print_daily_top_table(
+    title: str, by_day_group: dict[str, dict[str, int]], top_n: int
+) -> None:
     table = Table(title=title, title_style="bold", header_style="bold")
     table.add_column("date", style="cyan", no_wrap=True)
     table.add_column("sender", style="cyan", no_wrap=True)
@@ -69,10 +79,17 @@ def print_daily_top_table(title: str, by_day_group: dict[str, dict[str, int]], t
         return
 
     for day in sorted(by_day_group):
-        top = sorted(by_day_group[day].items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+        top = sorted(by_day_group[day].items(), key=lambda kv: kv[1], reverse=True)[
+            :top_n
+        ]
         max_n = top[0][1]
         for i, (label, n) in enumerate(top):
-            table.add_row(day if i == 0 else "", label, str(n), f"[magenta]{bar(n, max_n)}[/magenta]")
+            table.add_row(
+                day if i == 0 else "",
+                label,
+                str(n),
+                f"[magenta]{bar(n, max_n)}[/magenta]",
+            )
         table.add_section()
     console.print(table)
 
@@ -81,13 +98,10 @@ def analyze(app_filter: str | None = None) -> None:
     conn = init_db()
     if app_filter:
         like = f"%{app_filter}%"
-        rows = conn.execute(
-            "SELECT app_name, sender, received_at FROM notifications "
-            "WHERE app_name LIKE ? OR sender LIKE ?",
-            (like, like),
-        ).fetchall()
+        raw_rows = conn.execute(NOTIFICATIONS_BY_APP_FILTER, (like, like)).fetchall()
     else:
-        rows = conn.execute("SELECT app_name, sender, received_at FROM notifications").fetchall()
+        raw_rows = conn.execute(NOTIFICATIONS_ALL).fetchall()
+    rows = cast(list[tuple[str, str, str]], raw_rows)
 
     if not rows:
         console.print("No notifications logged yet.")
@@ -118,7 +132,9 @@ def analyze(app_filter: str | None = None) -> None:
     top_senders = sorted(by_sender.items(), key=lambda kv: kv[1], reverse=True)[:TOP_N]
     print_count_table(f"Top {TOP_N} senders", top_senders, "sender")
 
-    print_daily_top_table(f"Daily top {TOP_PER_DAY} senders", by_day_sender, TOP_PER_DAY)
+    print_daily_top_table(
+        f"Daily top {TOP_PER_DAY} senders", by_day_sender, TOP_PER_DAY
+    )
 
 
 if __name__ == "__main__":
