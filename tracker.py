@@ -46,6 +46,8 @@ TOP_LEVEL_STRING = re.compile(r'^   string "(.*)"$')
 # Hopefully Discord doesn't change it's notification format in the future...
 SENDER_PREFIX = re.compile(r"^([^\s:][^:]{0,60}): (.*)$", re.DOTALL)
 
+IGNORED_MESSAGE = re.compile(r"screen(shot| recording) has been saved", re.IGNORECASE)
+
 
 def init_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -103,6 +105,9 @@ def watch() -> None:
             app_name, _app_icon, summary, body = top_strings[:4]
             in_block = False
             top_strings = []
+
+            if IGNORED_MESSAGE.search(summary) or IGNORED_MESSAGE.search(body):
+                continue
 
             sender, message = split_sender(app_name, summary, body)
             received_at = datetime.now(timezone.utc)
